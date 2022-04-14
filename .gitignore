@@ -1,0 +1,12 @@
+*.engine
+*.mkv
+*.weights
+*.jpeg
+@eaDir
+.devcontainer.json
+docker-compose.yml
+.vscode
+Dockerfile.aarch64.old
+cal.sh
+calibration.txt
+config.toml
