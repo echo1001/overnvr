@@ -2,18 +2,16 @@
 use tokio;
 use anyhow::Result;
 
-use warp::Filter;
-
 mod track;
 mod packetizer;
 
-mod ffi;
-mod surface;
-mod detector;
+pub(crate) use overnvr_deepstream::{detector, surface};
 mod source;
 mod dvr;
 mod client;
 mod model;
+mod database;
+mod api;
 
 use tokio::io::AsyncReadExt;
 
@@ -21,10 +19,12 @@ use tokio::io::AsyncReadExt;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub use source::{Source, SourceLink};
+use std::env;
 
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env::set_var("RUST_LOG", "actix_web=debug");
     gst::init()?;
 
     let file = if let Ok(f) = std::env::var("OVERNVR_CONFIG") {
@@ -39,7 +39,12 @@ async fn main() -> Result<()> {
 
     let config: model::Config = toml::from_slice(buf.as_slice())?;
 
-    dvr::DVR::new(config).await?.start().await?;
+    let dvr = dvr::DVR::new(config).await?;
+    if let Err(e) = dvr.start().await {
+        println!("{:?}", e);
+    }
+
+    api::start_server(dvr.database.clone(), dvr.clone()).await?;
 
     Ok(())
 }

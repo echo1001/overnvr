@@ -1,33 +1,31 @@
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use std::{collections::HashMap, hash::Hash};
 use std::sync::Arc;
-use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use futures::FutureExt;
 use crate::dvr::DVR;
-use crate::source::SourceWeak;
 use crate::surface::EncodedImage;
-use rumqttc::{AsyncClient, QoS};
+use rumqttc::QoS;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
+// use poem_openapi::Object;
+
 use mongodb::bson::oid::ObjectId;
-use tokio::sync::{Mutex, watch::{channel, Sender, Receiver}};
-use tokio_util::sync::{CancellationToken, DropGuard};
 
 use geojson;
 use geo_types::{Geometry, point};
-use geo::prelude::*;
 use std::convert::TryFrom;
 
-use crate::detector::{BufferResult, BatchImage};
 use crate::Result;
 use crate::detector::model::DetectorConfig;
 
 pub mod utils;
 mod mqtt;
 
-pub use utils::{JsonDuration, MS};
+pub use utils::{JsonDuration};
 
 use self::mqtt::Attr;
 
@@ -59,17 +57,47 @@ pub struct Config {
     pub database_url: String,
     pub database_name: String,
     pub enable_detector: bool,
+    pub cookie_key: String,
+    pub token_key: String,
     pub storage: Storage,
     pub detector: DetectorConfig,
     pub mqtt: MQTT
+}
+
+
+#[derive(Serialize, Deserialize)]
+pub struct Stream {
+    pub url: String,
+    pub detect: bool
+}
+
+//impl Hash
+
+#[derive(Serialize, Deserialize)]
+pub struct SourceConfig {
+    pub _id: ObjectId,
+    pub name: String,
+    pub detect: bool,
+    pub enable: bool,
+    pub streams: HashMap<String, Stream>
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Recording {
+    pub _id: ObjectId,
+    pub source: ObjectId,
+    pub file: String, 
+    pub start: JsonDuration,
+    pub end: JsonDuration,
+    pub size: u64
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Event {
     pub _id: ObjectId, // TODO: Store in database
     pub camera_id: ObjectId,
-    pub start: JsonDuration<MS>,
-    pub end: JsonDuration<MS>,
+    pub start: JsonDuration,
+    pub end: JsonDuration,
     pub thumb_start: String,
     pub region_name: String
 }
@@ -82,12 +110,12 @@ pub struct Region {
     pub region_name: String,
     pub classes: Vec<String>,
     pub min_confidence: f32,
-    pub hold_time: JsonDuration<MS>,
+    pub hold_time: JsonDuration,
     #[serde(deserialize_with = "deserialize_geojson", serialize_with = "serialize_geojson")]
     pub poly: geo_types::Geometry<f32>,
 
     #[serde(skip)]
-    pub last_trigger: Option<JsonDuration<MS>>,
+    pub last_trigger: Option<JsonDuration>,
     #[serde(skip)]
     pub last_event: Option<Event>,
 }
@@ -143,7 +171,7 @@ where
 #[derive(Serialize, Deserialize)]
 pub struct Detection {
     pub source: ObjectId,
-    pub start: JsonDuration<MS>,
+    pub start: JsonDuration,
     pub class_id: String,
     pub confidence: f32,
     #[serde(deserialize_with = "deserialize_geojson", serialize_with = "serialize_geojson")]
@@ -151,8 +179,8 @@ pub struct Detection {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Detection_Json {
-    pub start: JsonDuration<MS>,
+pub struct DetectionJson {
+    pub start: JsonDuration,
     #[serde(deserialize_with = "deserialize_geojson", serialize_with = "serialize_geojson")]
     pub region: geo_types::Geometry<f32>,
 }
@@ -160,14 +188,15 @@ pub struct Detection_Json {
 
 #[derive(Deserialize, Serialize)]
 pub struct DetectionFilter {
-    pub source: ObjectId,
-    pub at: JsonDuration<MS>,
+    #[serde(deserialize_with = "source_list_deserialize")]
+    pub source: Vec<ObjectId>,
+    pub at: JsonDuration,
 }
 
 
 #[derive(Deserialize)]
 pub struct EventFilter {
-    pub start: Option<i64>
+    pub start: Option<JsonDuration>
 }
 
 
@@ -176,27 +205,102 @@ pub struct RangeFilter {
     #[serde(deserialize_with = "source_list_deserialize")]
     pub source: Vec<ObjectId>,
     
-    pub from: JsonDuration<MS>,
-    pub to: JsonDuration<MS>,
+    pub from: JsonDuration,
+    pub to: JsonDuration,
+}
+
+#[derive(Deserialize)]
+pub struct ExportPath {    
+    pub id: CameraPath,
+    pub file: String,
 }
 
 #[derive(Deserialize)]
 pub struct ExportFilter {    
-    pub from: JsonDuration<MS>,
-    pub to: JsonDuration<MS>,
+    pub from: JsonDuration,
+    pub to: JsonDuration,
 }
 
 #[derive(Deserialize)]
 pub struct JumpFilter {
     #[serde(deserialize_with = "source_list_deserialize")]
     pub source: Vec<ObjectId>,    
-    pub from: JsonDuration<MS>,
+    pub from: JsonDuration,
 }
 
 #[derive(Serialize, Clone, Copy)]
 pub struct EventGroup {
-    pub start: JsonDuration<MS>,
-    pub end: JsonDuration<MS>,
+    pub start: JsonDuration,
+    pub end: JsonDuration,
+}
+
+
+#[derive(Deserialize)]
+pub struct CameraPath {
+    #[serde(deserialize_with = "source_str_deserialize")]
+    pub id: ObjectId,
+}
+
+#[derive(Deserialize)]
+pub struct AlertPath {
+    #[serde(deserialize_with = "source_str_deserialize")]
+    pub id: ObjectId,
+}
+
+#[derive(Deserialize)]
+pub struct EventPath {
+    #[serde(deserialize_with = "source_str_deserialize")]
+    pub id: ObjectId,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UserAuth {
+    pub username: String,
+    pub admin: bool,
+    pub expires: DateTime<Utc>
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WSToken {
+    pub username: String,
+    pub expires: DateTime<Utc>,
+    pub scope: String
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WSTokenQuery {
+    pub token: String
+}
+
+#[derive(Deserialize)]
+pub struct UserCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct User {
+    pub _id: ObjectId,
+    pub username: String,
+    pub pass: Vec<u8>,
+    pub salt: Vec<u8>,
+    pub admin: bool
+}
+
+impl Into<UserAuth> for User {
+    fn into(self) -> UserAuth {
+        UserAuth {
+            username: self.username,
+            admin: self.admin,
+            expires: Utc::now() + chrono::Duration::days(14)
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct CreateUser {
+    pub username: String,
+    pub password: String,
 }
 
 fn source_list_deserialize<'de, D>(deserializer: D) -> Result<Vec<ObjectId>, D::Error>
@@ -211,6 +315,15 @@ where
         oids.push(ObjectId::from_str(s).map_err(|_| serde::de::Error::custom("Not a valid oid"))?);
     }
     Ok(oids)
+}
+
+fn source_str_deserialize<'de, D>(deserializer: D) -> Result<ObjectId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let oid = ObjectId::from_str(&s).map_err(|_| serde::de::Error::custom("Not a valid oid"))?;
+    Ok(oid)
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]

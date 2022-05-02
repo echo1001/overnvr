@@ -16,3 +16,4 @@ notes
 Dockerfile*
 .dockerignore
 config.toml
+test

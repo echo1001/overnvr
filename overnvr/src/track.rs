@@ -28,12 +28,15 @@ struct TrackLocalStaticSampleInternal {
 pub struct TrackLocalStaticSample {
     rtp_track: TrackLocalStaticRTP,
     internal: Mutex<TrackLocalStaticSampleInternal>,
+    watch: tokio::sync::watch::Sender<bool>,
+    rx: Mutex<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl TrackLocalStaticSample {
     /// returns a TrackLocalStaticSample
     pub fn new(codec: RTCRtpCodecCapability, id: String, stream_id: String) -> Self {
         let rtp_track = TrackLocalStaticRTP::new(codec, id, stream_id);
+        let (s, r) = tokio::sync::watch::channel(false);
 
         TrackLocalStaticSample {
             rtp_track,
@@ -43,12 +46,17 @@ impl TrackLocalStaticSample {
                 base: None,
                 clock_rate: 0.0f64,
             }),
+            watch: s,
+            rx: Mutex::new(r)
         }
     }
 
-    /// codec gets the Codec of the track
-    pub fn codec(&self) -> RTCRtpCodecCapability {
-        self.rtp_track.codec()
+    pub async fn wait(&self) {
+        let mut l = self.rx.lock().await;
+        if *l.borrow() == true {
+            return;
+        }
+        l.changed().await;
     }
 
     pub async fn rebase(&self) {
@@ -146,7 +154,7 @@ impl TrackLocal for TrackLocalStaticSample {
         ));
         internal.sequencer = Some(sequencer);
         internal.clock_rate = codec.capability.clock_rate as f64;
-
+        let _ = self.watch.send(true);
         Ok(codec)
     }
 

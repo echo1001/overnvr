@@ -10,3 +10,4 @@ Dockerfile.aarch64.old
 cal.sh
 calibration.txt
 config.toml
+test

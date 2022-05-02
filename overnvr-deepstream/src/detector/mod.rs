@@ -2,11 +2,9 @@ pub mod model;
 use crate::Result;
 use crate::surface::{Surface, EncodedImage};
 
-use glib::clone::Downgrade;
 use model::DetectorConfig;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::fmt::{Pointer, Write};
 use std::sync::{Arc, Weak};
 use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -33,7 +31,6 @@ use crate::ffi::{
     NvDsInferContextBatchOutput,
 
     NvDsInferNetworkType_Detector,
-    NVDSINFER_CLUSTER_NMS,
     NvDsInferLogLevel
 
 };

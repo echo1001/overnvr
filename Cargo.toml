@@ -1,50 +1,5 @@
-[package]
-name = "overnvr"
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[build-dependencies]
-bindgen = "0.59.2"
-cc = "1.0.73"
-pkg-config = "0.3.22"
-
-[dependencies]
-anyhow = "1.0.56"
-async-trait = "0.1.52"
-base64 = "0.13.0"
-bytes = "1.1.0"
-chrono = "0.4.19"
-geo = "0.18.0"
-geo-types = {version="0.7", features=["serde"]}
-geojson = {version="0.22.2", features=["geo-types"]}
-glib = "0.15.9"
-gst = {package="gstreamer", version="0.18.6", features=["v1_14"]}
-gst-sys = {version = "0.18", features = ["v1_8"], package = "gstreamer-sys"}
-gst-app = {package="gstreamer-app", version= "0.18.0", features=["v1_14"]}
-libc = "0.2"
-once_cell = "1.10.0"
-serde = "1.0.136"
-serde_json = "1.0.79"
-thiserror = "1.0.30"
-tokio = {version = "1.15", features = ["full", "tracing"]}
-console-subscriber = "0.1.3"
-
-tokio-util = { version = "0.6.9" }
-toml = "0.5.8"
-rand = "0.8.5"
-warp = "0.3"
-futures = "0.3"
-webrtc = "0.4.0"
-jemallocator = "0.3.2"
-mongodb = "2.1.0"
-rumqttc = "0.10.0"
-
-
-
-[dependencies.futures-sink]
-version = "0.3"
-
-[dependencies.futures-util]
-version = "0.3"
-features = ["sink"]
+[workspace]
+members = [
+    "overnvr",
+    "overnvr-deepstream"
+]

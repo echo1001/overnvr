@@ -1,19 +1,15 @@
 use crate::Result;
+use crate::model::JsonDuration;
 use crate::track;
 use crate::SourceLink;
-use crate::source::Recording;
 use crate::dvr::{DVRWeak, DVR};
 
-use anyhow::bail;
 
 use gst::prelude::*;
-use gst_sys::GST_MAP_READ;
-use gst_sys::gst_buffer_map;
-use gst_sys::gst_buffer_unmap;
-use mongodb::bson::Bson;
 use mongodb::bson::oid::ObjectId;
-use mongodb::options::FindOneOptions;
 use once_cell::sync::OnceCell;
+use poem::web::websocket::Message;
+use poem::web::websocket::WebSocketStream;
 use serde::{Serialize, Deserialize};
 
 use tokio::task::JoinHandle;
@@ -25,7 +21,6 @@ use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidateInit};
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
@@ -44,20 +39,18 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::Weak;
-use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use futures_util::SinkExt;
-use warp::ws::{WebSocket, Message};
 
 use futures::stream::TryStreamExt;
-use mongodb::{bson::doc, options::FindOptions};
+use mongodb::{bson::doc};
 
 #[derive(Serialize, Deserialize)]
 struct Info {
     id: String,
-    startpts: u64,
+    startpts: JsonDuration,
     startrtp: u32
 }
 
@@ -77,7 +70,7 @@ struct StartLive {
 struct StartPast {
     pub id: String,
     pub source: String,
-    pub at: f64
+    pub at: JsonDuration
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,7 +117,7 @@ struct InputPipeline {
 }
 
 impl InputPipeline {
-    async fn open(fname: &String, at: Option<std::time::Duration>) -> Result<(InputPipeline, gst_app::app_sink::AppSinkStream)> {
+    async fn open(fname: &String, at: Option<JsonDuration>) -> Result<(InputPipeline, gst_app::app_sink::AppSinkStream)> {
         let pipeline = gst::parse_launch("filesrc name=file ! matroskademux name=demux ! appsink sync=0 wait-on-eos=0 max-buffers=5 emit-signals=1 async=0 enable-last-sample=0 name=sink")?;
         let pipeline: gst::Pipeline = pipeline.downcast().unwrap();
         pipeline.by_name("file").unwrap().set_property("location", fname);
@@ -146,6 +139,7 @@ impl InputPipeline {
             flags.insert(gst::SeekFlags::SNAP_BEFORE);
             flags.insert(gst::SeekFlags::FLUSH);
 
+            let d: Duration = d.into();
             let time: gst::ClockTime = gst::ClockTime::try_from(d)?;
 
             demux.seek_simple(flags, time);
@@ -169,7 +163,7 @@ struct Player {
 }
 
 impl Player {
-    async fn open(source: String, at: std::time::Duration, dvr: DVRWeak) -> Result<(Player, gst_app::app_sink::AppSinkStream)> {
+    async fn open(source: String, at: JsonDuration, dvr: DVRWeak) -> Result<(Player, gst_app::app_sink::AppSinkStream)> {
         let pipeline = gst::parse_launch("appsrc emit-signals=1 name=src ! h264parse ! video/x-h264,stream-format=byte-stream,alignment=au ! appsink sync=1 wait-on-eos=0 max-buffers=5 emit-signals=1 async=0 enable-last-sample=0 name=sink")?;
         let pipeline: gst::Pipeline = pipeline.downcast().unwrap();
         let appsink: gst_app::AppSink = pipeline.by_name("sink").unwrap().downcast().unwrap();
@@ -187,32 +181,8 @@ impl Player {
         let input_task = tokio::spawn(async move {
 
             let mut cursor = if let Some(dvr) = dvr.upgrade() {
-                let recordings = dvr.database.collection::<Recording>("recordings");
-                let source = ObjectId::from_str(source.as_str())?;
-                
-                
-                let recording_filter = doc! {
-                    "start": {
-                        "$lte": (at.as_nanos() as i64)
-                    },
-                    "source": source
-                };
-                let find_options = FindOneOptions::builder().sort(doc! { "start": -1 as i32 }).build();
-
-                let recording = recordings.find_one(recording_filter, find_options).await?;
-                if let Some(recording) = recording {
-                    let recording_filter = doc! {
-                        "start": {
-                            "$gte": recording.start as i64
-                        },
-                        "source": source
-                    };
-                    let find_options = FindOptions::builder().sort(doc! { "start": 1 as i32 }).build();
-                    recordings.find(recording_filter, find_options).await?
-                    
-                } else {
-                    return Result::<()>::Ok(());
-                }
+                let s = FromStr::from_str(source.as_str())?;
+                dvr.database.get_recordings( &s, &at, None).await?
             } else {
                 return Result::<()>::Ok(());
             };
@@ -221,7 +191,7 @@ impl Player {
                 let id = recording._id.clone();
                 let start = recording.start;
                 
-                let file_start = std::time::Duration::from_nanos(recording.start as u64);
+                let file_start = recording.start;
 
                 let (pipeline, mut r) = InputPipeline::open(&recording.file, if at >= file_start { Some(at - file_start)} else {None}).await?;
                 
@@ -230,8 +200,10 @@ impl Player {
                         let mut buf = buffer.to_owned();
                         let buffer = buf.get_mut().unwrap();
                         if let Some(pts) = buffer.pts() {
-                            let pts: std::time::Duration = pts.into();
-                            if pts < at {
+                            let pts: Duration = pts.into();
+                            let at: Duration = at.into();
+
+                            if pts > at {
                                 if buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
                                     continue;
                                 }
@@ -270,44 +242,11 @@ impl Drop for Player {
     }
 }
 
-pub async fn export(source: ObjectId, from: std::time::Duration, to: std::time::Duration, dvr: &DVR) -> Result<Vec<u8>> {
+pub async fn export(source: ObjectId, from: JsonDuration, to: JsonDuration, dvr: &DVR) -> Result<Vec<u8>> {
 
         
-        let mut cursor = {
-            let recordings = dvr.database.collection::<Recording>("recordings");            
-            
-            let recording_filter = doc! {
-                "start": {
-                    "$lte": (from.as_nanos() as i64)
-                },
-                "source": source
-            };
-            let find_options = FindOneOptions::builder().sort(doc! { "start": -1 as i32 }).build();
-
-            let recording = recordings.find_one(recording_filter, find_options).await?;
-            if let Some(recording) = recording {
-                let recording_filter = doc! {
-                    "$and": [
-                        {
-                            "start": {
-                                "$gte": recording.start as i64
-                            },
-                        },
-                        {
-                            "start": {
-                                "$lte": to.as_nanos() as i64
-                            },
-                        }
-                    ],
-                    "source": source
-                };
-                let find_options = FindOptions::builder().sort(doc! { "start": 1 as i32 }).build();
-                recordings.find(recording_filter, find_options).await?
-                
-            } else {
-                bail!("No recordings found");
-            }
-        };
+        let mut cursor = 
+            dvr.database.get_recordings(&source, &from, Some(&to)).await?;
 
         let pipeline = gst::parse_launch("appsrc emit-signals=1 name=src ! h264parse ! video/x-h264 ! mux.video_0 mp4mux name=mux ! filesink async=false name=sink location=out.mkv")?;
         let pipeline: gst::Pipeline = pipeline.downcast().unwrap();
@@ -329,7 +268,7 @@ pub async fn export(source: ObjectId, from: std::time::Duration, to: std::time::
             let id = recording._id.clone();
             let start = recording.start;
             
-            let file_start = std::time::Duration::from_nanos(recording.start as u64);
+            let file_start = recording.start;
 
             let (pipeline, mut r) = InputPipeline::open(&recording.file, if from >= file_start { Some(from - file_start)} else {None}).await?;
             
@@ -340,7 +279,7 @@ pub async fn export(source: ObjectId, from: std::time::Duration, to: std::time::
                         let buffer = buf.get_mut().unwrap();
                         if let Some(pts) = buffer.pts() {
                             let pts: std::time::Duration = pts.into();
-                            if pts > to {
+                            if to < pts {
                                 break;
                             }
 
@@ -381,7 +320,7 @@ pub async fn export(source: ObjectId, from: std::time::Duration, to: std::time::
 
 impl Track {
 
-    async fn start_playback(&self, dvr: DVRWeak, mut rn: watch::Receiver<bool>, source: String, at: std::time::Duration) {
+    async fn start_playback(&self, dvr: DVRWeak, mut rn: watch::Receiver<bool>, source: String, at: JsonDuration) {
         let mut current_future = self.0.current_future.lock().await;
         current_future.take();
 
@@ -405,7 +344,7 @@ impl Track {
 
             let info = Info{
                 id: id.clone(),
-                startpts: at.as_nanos() as u64,
+                startpts: at.into(),
                 startrtp: track.get_timestamp().await
             };
             
@@ -414,9 +353,9 @@ impl Track {
             }
 
 
-            let mut sent_one = false;
+            let sent_one = false;
             let mut last_duration = None;
-            let mut first_one: Option<std::time::Duration> = None;
+            let first_one: Option<std::time::Duration> = None;
             while let Some(s) = s.next().await {
 
                 let buf = s.buffer().unwrap();
@@ -539,11 +478,10 @@ impl Track {
 
                 if !sent_one {
                     let pts = duration_expanded;
-                    let pts: u64 = pts.nseconds();
 
                     let info = Info{
                         id: id.clone(),
-                        startpts: pts,
+                        startpts: pts.into(),
                         startrtp: track.get_timestamp().await
                     };
                     
@@ -664,7 +602,6 @@ impl Client {
             let (s, r) = watch::channel(false);
 
             let f = tokio::spawn({let rtp_sender = rtp_sender.clone(); async move {
-                let mut rtcp_buf = vec![0u8; 1500];
                 while let Ok((p, a)) = rtp_sender.read_rtcp().await {
                     for p in p {
                         //println!("{:?}", p);
@@ -738,7 +675,7 @@ impl Client {
         }
     }
 
-    pub async fn start(ws: WebSocket, dvr: DVRWeak) -> Result<()> {
+    pub async fn start(ws: WebSocketStream, dvr: DVRWeak) -> Result<()> {
         let (tm, mut rm) = channel(10);
         let (sn, rn) = watch::channel(false);
 
@@ -830,8 +767,8 @@ impl Client {
                         break;
                     }
                     if m.is_text() {
-                        if let Ok(t) = m.to_str() {
-                            if let Ok(m) = serde_json::from_str(t) {
+                        if let Message::Text(t) = m {
+                            if let Ok(m) = serde_json::from_str(&t) {
                                 match m {
                                     ClientMessage::SDP(s) => {
                                         if let Err(err) = c.handle_reply(s).await {
@@ -870,7 +807,7 @@ impl Client {
                                     ClientMessage::From(s) => {
                                         let tracks = c.tracks.lock().await;
                                         if tracks.contains_key(&s.id) {
-                                            tracks[&s.id].start_playback(c.dvr.clone(), c.ready.clone(), s.source, std::time::Duration::from_millis(s.at as u64)).await;
+                                            tracks[&s.id].start_playback(c.dvr.clone(), c.ready.clone(), s.source, s.at).await;
                                         }
                                     }
                                     

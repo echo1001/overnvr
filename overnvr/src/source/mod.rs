@@ -1,53 +1,26 @@
-use crate::dvr::{DVRWeak, DVR};
+use crate::dvr::DVRWeak;
 use crate::{Result, surface::Surface};
 use chrono::{Utc, DateTime};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use glib::clone::Upgrade;
 use serde::{Serialize, Deserialize};
-use tokio::io::AsyncWriteExt;
 use tokio::{sync::Mutex, task::JoinHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{str::FromStr, collections::HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use mongodb::bson::oid::ObjectId;
-use mongodb::bson::{doc, Bson};
+use mongodb::bson::doc;
 
 use gst::prelude::*;
 
-use gst_app::{AppSink, AppSrc};
+use gst_app::{AppSink};
 
 use futures_util::StreamExt;
 
 mod source_link;
 pub use source_link::SourceLink;
 
-#[derive(Serialize, Deserialize)]
-pub struct Stream {
-    pub url: String,
-    pub detect: bool
-}
-
-//impl Hash
-
-#[derive(Serialize, Deserialize)]
-pub struct SourceConfig {
-    pub _id: ObjectId,
-    pub name: String,
-    pub detect: bool,
-    pub enable: bool,
-    pub streams: HashMap<String, Stream>
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Recording {
-    pub _id: ObjectId,
-    pub source: ObjectId,
-    pub file: String, 
-    pub start: u64,
-    pub end: u64,
-    pub size: u64
-}
 
 pub struct PipelineHolder {
     pipeline: gst::Pipeline,
@@ -115,7 +88,7 @@ const STREAM_ONLY: &str = r##"
     rtspsrc name=src latency=2000 tcp-timeout=2000000 buffer-mode=3
     src. ! queue ! rtph264depay ! queue ! tee name=raw_tee
 
-    raw_tee. ! queue max-size-buffers=30 leaky=downstream ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! 
+    raw_tee. ! queue max-size-buffers=30 leaky=downstream ! h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! 
         appsink name=raw_sink max_buffers=1 drop=0 sync=0 emit-signals=1 async=0 enable-last-sample=0 wait-on-eos=0
 "##;
 // ! videorate max-rate=5
@@ -345,16 +318,7 @@ impl Source {
                                 let time: u64 = st.get("running-time").unwrap();
                                 if let Some(this) = weak_self.upgrade() {
                                     if let Some(dvr) = this.inner.dvr.upgrade() {
-                                        let recording = Recording {
-                                            _id: ObjectId::new(),
-                                            end: 0,
-                                            file: location,
-                                            size: 0,
-                                            source: this.inner._id.clone(),
-                                            start: time
-                                        };
-
-                                        dvr.database.collection::<Recording>("recordings").insert_one(&recording, None).await;
+                                        dvr.database.add_recording(&this.inner._id, &location, time).await;
                                     }
                                 }
 
@@ -365,17 +329,7 @@ impl Source {
                                 if let Some(this) = weak_self.upgrade() {
                                     if let Some(dvr) = this.inner.dvr.upgrade() {
                                         if let Ok(data) = std::fs::metadata(&location) {
-                                            let file = doc! {
-                                                "file": location
-                                            };
-
-                                            let update = doc! {
-                                                "$set": {
-                                                    "size": data.len() as i64,
-                                                    "end": time as i64
-                                                }
-                                            };
-                                            dvr.database.collection::<Recording>("recordings").update_one(file, update, None).await;
+                                            dvr.database.finish_recording(&this.inner._id, &location, time, data.len()).await;
                                         }
                                     }
                                 }

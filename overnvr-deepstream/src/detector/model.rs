@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+#![allow(non_snake_case)]
 
 use serde::{Serialize, Deserialize, Deserializer};
 

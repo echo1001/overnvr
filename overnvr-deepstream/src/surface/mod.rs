@@ -89,6 +89,7 @@ impl Drop for InnerSurface {
     }
 }
 impl InnerSurface {
+    #[allow(unused_variables)]
     fn new(width: u32, height: u32, gl: bool) -> Result<InnerSurface> {
         let mut params = NvBufSurfaceCreateParams{
             colorFormat: NVBUF_COLOR_FORMAT_RGBA,
@@ -284,7 +285,6 @@ impl InnerSurface {
                 bail!("unable to initialize transform");
             }
 
-            let this_surf = *(*self.surf).surfaceList;
             let other_surf = *(*other.surf).surfaceList;
             
             let mut from_rect = NvBufSurfTransformRect {
@@ -331,7 +331,7 @@ unsafe impl Sync for Surface {}
 unsafe impl Send for Surface {}
 
 impl Surface {
-    pub(crate) async fn new(width: u32, height: u32, gl: bool) -> Result<Surface> {
+    pub async fn new(width: u32, height: u32, gl: bool) -> Result<Surface> {
         let surf = tokio::task::spawn_blocking(move || {
             let inner = InnerSurface::new(width, height, gl)?;
 
@@ -343,7 +343,7 @@ impl Surface {
         Ok(surf)
     }
 
-    pub(crate) async fn from_buffer(buffer: Buffer) -> Result<Surface> {
+    pub async fn from_buffer(buffer: Buffer) -> Result<Surface> {
         let surf = tokio::task::spawn_blocking(move || {
             let inner = InnerSurface::from_buffer(buffer)?;
 
@@ -356,7 +356,7 @@ impl Surface {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn encode(&self) -> Result<Arc<EncodedImage>> {
+    pub async fn encode(&self) -> Result<Arc<EncodedImage>> {
         let inner = self.inner.clone();
 
         let encoded = tokio::task::spawn_blocking(move || {
@@ -367,7 +367,7 @@ impl Surface {
         Ok(encoded)
     }
 
-    pub(crate) async fn place(&self, other: &Self) -> Result<()> {
+    pub async fn place(&self, other: &Self) -> Result<()> {
         let source_inner = self.inner.clone();
         let dst_inner = other.inner.clone();
 
@@ -379,7 +379,7 @@ impl Surface {
         Ok(())
     }
 
-    pub(crate) async fn crop(&self, other: &Self, left: u32, top: u32, width: u32, height: u32) -> Result<()> {
+    pub async fn crop(&self, other: &Self, left: u32, top: u32, width: u32, height: u32) -> Result<()> {
         let source_inner = self.inner.clone();
         let dst_inner = other.inner.clone();
 

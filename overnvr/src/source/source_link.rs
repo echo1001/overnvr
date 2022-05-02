@@ -46,7 +46,7 @@ impl SourceLink {
 
     pub async fn push(&self, sample: gst::Sample) {
         let mut buffer = self.0.buffer.lock().await;
-        let mut tx = self.0.tx.lock().await;
+        let tx = self.0.tx.lock().await;
 
         if let Some(buf) = sample.buffer() {
             if !buf.flags().contains(gst::BufferFlags::DELTA_UNIT) {
