@@ -1,10 +1,10 @@
 use crate::Result;
-use anyhow::{bail, anyhow};
+use anyhow::bail;
 use chrono::Utc;
 use rand::rngs::{OsRng};
 use rand::RngCore;
 use mongodb::{
-    bson::{doc, oid::ObjectId, bson},
+    bson::{doc, oid::ObjectId},
     IndexModel, Collection, options::{FindOneOptions, FindOptions}, Cursor
 };
 use sha2::Digest;
@@ -17,6 +17,7 @@ use futures_util::TryStreamExt;
 
 #[derive(Clone)]
 pub struct Database {
+    #[allow(unused)]
     db: mongodb::Database,
     recordings: Collection<Recording>,
     detections: Collection<Detection>,

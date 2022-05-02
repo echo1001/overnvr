@@ -56,7 +56,7 @@ impl TrackLocalStaticSample {
         if *l.borrow() == true {
             return;
         }
-        l.changed().await;
+        let _ = l.changed().await;
     }
 
     pub async fn rebase(&self) {

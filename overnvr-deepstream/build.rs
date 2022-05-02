@@ -56,6 +56,9 @@ fn main() {
         .allowlist_function("cudaSetDevice")
         .allowlist_function("NvDsInferContext_.*")
         .layout_tests(false)
+        .disable_header_comment()
+        .generate_comments(false)
+        
         .opaque_type("INvDsInferContext")
         .prepend_enum_name(false)
         .generate()

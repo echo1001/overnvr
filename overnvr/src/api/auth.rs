@@ -1,17 +1,15 @@
-use std::{future::{ready, Ready}, pin::Pin};
+use std::pin::Pin;
 
-use chrono::Utc;
 use futures::Future;
-use serde::{Serialize, Deserialize};
 
 use actix_identity::Identity;
-use actix_web::{dev::Payload, web::{self, Query}, Error, FromRequest, HttpRequest, HttpResponse, web::Data};
+use actix_web::{dev::Payload, web::{Query}, Error, FromRequest, HttpRequest, web::Data};
 use crate::database::Database;
 
 use super::error::ServiceError;
-use hmac::{Hmac, NewMac};
+use hmac::{Hmac};
 use sha2::Sha256;
-use jwt::{VerifyWithKey, SignWithKey};
+use jwt::{VerifyWithKey};
 
 use crate::model::{UserAuth, WSToken, WSTokenQuery};
 

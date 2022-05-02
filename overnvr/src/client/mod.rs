@@ -6,7 +6,6 @@ use crate::dvr::{DVRWeak, DVR};
 
 use actix::WeakAddr;
 use actix::prelude::*;
-use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 
 use gst::prelude::*;
@@ -17,7 +16,6 @@ use serde::{Serialize, Deserialize};
 
 use tokio::task::JoinHandle;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::watch;
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -50,55 +48,14 @@ use futures_util::SinkExt;
 use futures::stream::TryStreamExt;
 use mongodb::{bson::doc};
 
-#[derive(Serialize, Deserialize)]
-struct Info {
-    id: String,
-    startpts: JsonDuration,
-    startrtp: u32
-}
+mod input;
+mod api;
+mod model;
 
-#[derive(Serialize, Deserialize)]
-struct TrackInfo {
-    pub id: String,
-}
+use input::InputPipeline;
+pub use api::{export, ClientHandler};
+use model::*;
 
-#[derive(Serialize, Deserialize)]
-struct StartLive {
-    pub id: String,
-    pub stream: String,
-    pub quality: String
-}
-
-#[derive(Serialize, Deserialize)]
-struct StartPast {
-    pub id: String,
-    pub source: String,
-    pub at: JsonDuration
-}
-
-#[derive(Serialize, Deserialize, Message)]
-#[rtype(result = "()")]
-enum ClientMessage {
-    SDP(RTCSessionDescription),
-    ICE(RTCIceCandidateInit),
-    AddTrack(Vec<TrackInfo>),
-    RemoveTrack(Vec<TrackInfo>),
-    Live(StartLive),
-    From(StartPast),
-    StartInfo(Info)
-}
-
-#[derive(Serialize, Deserialize, Message)]
-#[rtype(result = "()")]
-enum ServerMessage {
-    SDP(RTCSessionDescription),
-    ICE(RTCIceCandidateInit),
-    AddTrack(Vec<TrackInfo>),
-    RemoveTrack(Vec<TrackInfo>),
-    Live(StartLive),
-    From(StartPast),
-    StartInfo(Info)
-}
 
 struct CurrentPlayback(JoinHandle<Result<()>>);
 impl Drop for CurrentPlayback {
@@ -124,53 +81,6 @@ impl Drop for TrackInner {
     }
 }
 
-#[derive(Clone)]
-struct Track(Arc<TrackInner>);
-
-struct InputPipeline {
-    pipeline: gst::Pipeline
-}
-
-impl InputPipeline {
-    async fn open(fname: &String, at: Option<JsonDuration>) -> Result<(InputPipeline, gst_app::app_sink::AppSinkStream)> {
-        let pipeline = gst::parse_launch("filesrc name=file ! matroskademux name=demux ! appsink sync=0 wait-on-eos=0 max-buffers=5 emit-signals=1 async=0 enable-last-sample=0 name=sink")?;
-        let pipeline: gst::Pipeline = pipeline.downcast().unwrap();
-        pipeline.by_name("file").unwrap().set_property("location", fname);
-        let appsink: gst_app::AppSink = pipeline.by_name("sink").unwrap().downcast().unwrap();
-
-        let demux = pipeline.by_name("demux").unwrap();
-
-        let mut stream = appsink.stream();
-
-        pipeline.call_async_future(|pipeline| {
-            pipeline.set_state(gst::State::Playing);
-        }).await;
-
-        if let Some(d) = at {
-            stream.next().await;
-            
-            let mut flags = gst::SeekFlags::empty();
-            flags.insert(gst::SeekFlags::KEY_UNIT);
-            flags.insert(gst::SeekFlags::SNAP_BEFORE);
-            flags.insert(gst::SeekFlags::FLUSH);
-
-            let d: Duration = d.into();
-            let time: gst::ClockTime = gst::ClockTime::try_from(d)?;
-
-            demux.seek_simple(flags, time);
-        }
-
-        Ok((InputPipeline { 
-            pipeline
-        }, stream))
-    }
-}
-
-impl Drop for InputPipeline {
-    fn drop(&mut self) {
-        self.pipeline.set_state(gst::State::Null);
-    }
-}
 struct Player {
     pipeline: gst::Pipeline,
     input_task: JoinHandle<Result<()>>
@@ -207,7 +117,7 @@ impl Player {
                 
                 let file_start = recording.start;
 
-                let (pipeline, mut r) = InputPipeline::open(&recording.file, if at >= file_start { Some(at - file_start)} else {None}).await?;
+                let (pipeline, mut r) = InputPipeline::open_raw(&recording.file, if at >= file_start { Some(at - file_start)} else {None}).await?;
                 
                 while let Some(s) = r.next().await {
                     if let Some(buffer) = s.buffer() {
@@ -255,81 +165,9 @@ impl Drop for Player {
     }
 }
 
-pub async fn export(source: ObjectId, from: JsonDuration, to: JsonDuration, dvr: &DVR) -> Result<Vec<u8>> {
+#[derive(Clone)]
+pub struct Track(Arc<TrackInner>);
 
-        
-        let mut cursor = 
-            dvr.database.get_recordings(&source, &from, Some(&to)).await?;
-
-        let pipeline = gst::parse_launch("appsrc emit-signals=1 name=src ! h264parse ! video/x-h264 ! mux.video_0 mp4mux name=mux ! filesink async=false name=sink location=out.mkv")?;
-        let pipeline: gst::Pipeline = pipeline.downcast().unwrap();
-        let appsrc: gst_app::AppSrc = pipeline.by_name("src").unwrap().downcast().unwrap();
-        let mut sink = appsrc.sink();
-        
-        let bus = pipeline.bus().unwrap();
-        let mut fname = dvr.config.storage.recordings.clone();
-        fname.push(format!("{}.mp4", ObjectId::new()));
-        pipeline.by_name("sink").unwrap().set_property("location", fname.to_str().to_value());
-
-
-        pipeline.call_async_future(|pipeline| {
-            pipeline.set_state(gst::State::Playing);
-        }).await;
-        let mut base = None;
-
-        while let Some(recording) = cursor.try_next().await? {
-            let id = recording._id.clone();
-            let start = recording.start;
-            
-            let file_start = recording.start;
-
-            let (pipeline, mut r) = InputPipeline::open(&recording.file, if from >= file_start { Some(from - file_start)} else {None}).await?;
-            
-            while let Some(s) = r.next().await {
-                if let Some(buffer) = s.buffer() {
-                    if let Some(pts) = buffer.pts() {
-                        let mut buf = buffer.to_owned();
-                        let buffer = buf.get_mut().unwrap();
-                        if let Some(pts) = buffer.pts() {
-                            let pts: std::time::Duration = pts.into();
-                            if to < pts {
-                                break;
-                            }
-
-                            let base = if let Some(base) = base {
-                                base
-                            } else {
-                                base.replace(pts);
-                                pts
-                            };
-
-                            let pts = gst::ClockTime::try_from(pts - base)?;
-                            buffer.set_pts(pts);
-
-                            let sample = gst::Sample::builder()
-                                .buffer(&buf)
-                                .caps(&s.caps().unwrap().to_owned())
-                                .build();
-                            
-                            sink.send(sample).await; 
-                        }
-                    }
-                }
-            }
-        }
-        appsrc.end_of_stream()?;
-
-        bus.timed_pop_filtered(None, &[gst::MessageType::Eos, gst::MessageType::Error]);
-
-        pipeline.set_state(gst::State::Null)?;
-        //pipeline.state(None);
-
-        //bus.timed_pop_filtered(std::time::Duration::from_secs(1), &[gst::MessageType::Eos, gst::MessageType::Error]);
-
-        let f = tokio::fs::read(&fname).await?;
-        tokio::fs::remove_file(&fname).await?;
-        Ok(f)
-}
 
 impl Track {
 
@@ -644,10 +482,7 @@ impl Client {
             let (s, r) = watch::channel(false);
 
             let f = tokio::spawn({let rtp_sender = rtp_sender.clone(); async move {
-                while let Ok((p, a)) = rtp_sender.read_rtcp().await {
-                    for p in p {
-                        
-                    }
+                while let Ok((_p, _a)) = rtp_sender.read_rtcp().await {
                 }
                 Result::<()>::Ok(())
             }});
@@ -791,7 +626,7 @@ impl Client {
                 let weak = weak.clone();
                 Box::pin(async move {
                     if let Some(c) = weak.upgrade() {
-                        c.negotiate().await;
+                        let _ = c.negotiate().await;
                     }
                 })
             })
@@ -800,114 +635,4 @@ impl Client {
 
         Ok(c)
     }
-}
-
-pub struct ClientHandler{
-    pub dvr: DVRWeak,
-    pub client: Option<Client>
-}
-
-impl Actor for ClientHandler {
-    type Context = ws::WebsocketContext<Self>;
-    fn started(&mut self, ctx: &mut Self::Context) {
-        let addr = ctx.address().downgrade();
-        let dvr = self.dvr.clone();
-        
-        let o = async move {
-            Client::new(dvr, addr).await
-        }.into_actor(self).then(|c, act, _ctx| {
-            if let Ok(c) = c {
-                act.client.replace(c);
-            }
-            fut::ready(())
-        }).wait(ctx);
-
-    }
-
-    fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
-        if let Some(c) = self.client.take() {
-        }
-        Running::Stop
-    }
-}
-
-impl Handler<ServerMessage> for ClientHandler {
-    type Result = ();
-    fn handle(&mut self, msg: ServerMessage, ctx: &mut Self::Context) -> Self::Result {
-        let json = serde_json::to_string(&msg).unwrap();
-        ctx.text(json);
-    }
-}
-
-impl Handler<ClientMessage> for ClientHandler {
-    type Result = ();
-    fn handle(&mut self, msg: ClientMessage, ctx: &mut Self::Context) -> Self::Result {
-        if let Some(c) = &self.client {
-            let c = c.clone();
-            async move {
-                match msg {
-                    ClientMessage::SDP(s) => {
-                        if let Err(err) = c.handle_reply(s).await {
-                            println!("{:?}", err);
-                        }
-                    }
-                    
-                    ClientMessage::ICE(candidate) => {
-                        if let Err(err) = c.handle_ice(candidate).await {
-                            println!("{:?}", err);
-                        }
-                    }
-                    ClientMessage::AddTrack(s) => {
-                        if let Err(err) = c.add_track(s).await {
-                            println!("{:?}", err);
-                        }
-                    }
-                    ClientMessage::RemoveTrack(s) => {
-                        if let Err(err) = c.remove_track(s).await {
-                            println!("{:?}", err);
-                        }
-                        println!("Removed Track");
-                    }
-                    ClientMessage::Live(s) => {
-                        let tracks = c.tracks.lock().await;
-                        if tracks.contains_key(&s.id) {
-                            tracks[&s.id].start_live(c.dvr.clone(), c.ready.clone(), format!("{}_{}", s.stream, s.quality)).await;
-                        }
-                    }
-                    ClientMessage::From(s) => {
-                        let tracks = c.tracks.lock().await;
-                        if tracks.contains_key(&s.id) {
-                            tracks[&s.id].start_playback(c.dvr.clone(), c.ready.clone(), s.source, s.at).await;
-                        }
-                    }
-                    
-                    _ => ()
-                }
-            }.into_actor(self).wait(ctx);
-        }
-    }
-}
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ClientHandler {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        if let Ok(msg) = msg {
-            match msg {
-                ws::Message::Text(text) => {
-                    //let _ = self.inner.tx.try_send(text.trim().to_owned());
-                    if let Ok(m) = serde_json::from_str::<ClientMessage>(&text) {
-                        let f = ctx.address().do_send(m);
-                    }
-                },
-                ws::Message::Ping(bytes) => ctx.pong(&bytes),
-                ws::Message::Close(reason) => {
-                    ctx.close(reason);
-                    ctx.stop();
-                }
-                _ => {}
-            }
-        } else {
-            ctx.stop();
-        }
-    }
-
 }

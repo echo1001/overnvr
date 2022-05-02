@@ -1,29 +1,25 @@
-use std::str::FromStr;
 
 use actix_identity::{CookieIdentityPolicy, IdentityService, Identity};
 use actix_web_actors::ws;
 use chrono::Utc;
 use hmac::{Hmac, NewMac};
-use jwt::{SignWithKey, VerifyWithKey};
-use mongodb::bson::oid::ObjectId;
+use jwt::{SignWithKey};
 use serde_json::json;
-use crate::{Result, dvr::DVR, database::Database, model::{DetectionFilter, EventFilter, RangeFilter, CameraPath, Alert, AlertPath, EventPath, UserAuth, UserCredentials, WSToken, CreateUser, JumpFilter, ExportFilter, ExportPath}};
+use crate::{Result, dvr::DVR, database::Database, model::{DetectionFilter, EventFilter, RangeFilter, CameraPath, Alert, AlertPath, EventPath, UserAuth, UserCredentials, WSToken, CreateUser, JumpFilter, ExportFilter}};
 
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 mod auth;
 mod error;
 use error::ServiceError;
-pub(crate) struct Api;
 
-use crate::model::{Event, SourceConfig, JsonDuration, EventGroup, Detection, Region};
+use crate::model::{SourceConfig, Region};
 
-use actix_web::{get, post, delete, web::{Query, Json, Path}, App, HttpResponse, HttpServer, Responder, web::{Data, Form, self}, middleware, cookie::time::Duration, HttpRequest, http};
+use actix_web::{get, post, delete, web::{Query, Json, Path}, App, HttpResponse, HttpServer, Responder, web::{Data, self}, middleware, cookie::time::Duration, HttpRequest, http};
 use actix_files::Files;
 
 #[get("/api/event")]
-async fn get_events(db: Data<Database>, user: UserAuth, filter: Query<EventFilter>) -> impl Responder {
+async fn get_events(db: Data<Database>, _user: UserAuth, filter: Query<EventFilter>) -> impl Responder {
 
     if let Ok(d) = db.list_events(filter.0.start).await {
         Some(Json(d))
@@ -33,7 +29,7 @@ async fn get_events(db: Data<Database>, user: UserAuth, filter: Query<EventFilte
 }
 
 #[get("/api/event/{id}")]
-async fn get_event(db: Data<Database>, user: UserAuth, id: Path<EventPath>) -> impl Responder {
+async fn get_event(db: Data<Database>, _user: UserAuth, id: Path<EventPath>) -> impl Responder {
     if let Ok(d) = db.get_event(id.into_inner().id).await {
         Some(Json(d))
     } else {
@@ -42,7 +38,7 @@ async fn get_event(db: Data<Database>, user: UserAuth, id: Path<EventPath>) -> i
 }
 
 #[get("/api/event/range")]
-async fn get_event_range(db: Data<Database>, user: UserAuth, filter: Query<RangeFilter>) -> impl Responder {
+async fn get_event_range(db: Data<Database>, _user: UserAuth, filter: Query<RangeFilter>) -> impl Responder {
     let f = filter.into_inner();
     if let Ok(d) = db.list_events_range(f.source, f.from, f.to).await {
         Some(Json(d))
@@ -52,7 +48,7 @@ async fn get_event_range(db: Data<Database>, user: UserAuth, filter: Query<Range
 }
 
 #[get("/api/event/previous")]
-async fn get_event_previous(db: Data<Database>, user: UserAuth, filter: Query<JumpFilter>) -> impl Responder {
+async fn get_event_previous(db: Data<Database>, _user: UserAuth, filter: Query<JumpFilter>) -> impl Responder {
     let f = filter.into_inner();
     if let Ok(d) = db.list_event_previous(f.source, f.from).await {
         Some(Json(d))
@@ -62,7 +58,7 @@ async fn get_event_previous(db: Data<Database>, user: UserAuth, filter: Query<Ju
 }
 
 #[get("/api/event/next")]
-async fn get_event_next(db: Data<Database>, user: UserAuth, filter: Query<JumpFilter>) -> impl Responder {
+async fn get_event_next(db: Data<Database>, _user: UserAuth, filter: Query<JumpFilter>) -> impl Responder {
     let f = filter.into_inner();
     if let Ok(d) = db.list_event_next(f.source, f.from).await {
         Some(Json(d))
@@ -72,7 +68,7 @@ async fn get_event_next(db: Data<Database>, user: UserAuth, filter: Query<JumpFi
 }
 
 #[get("/api/cameras")]
-async fn get_cameras(db: Data<Database>, user: UserAuth) -> impl Responder {
+async fn get_cameras(db: Data<Database>, _user: UserAuth) -> impl Responder {
     if let Ok(d) = db.list_cameras().await {
         Some(Json(d))
     } else {
@@ -81,7 +77,7 @@ async fn get_cameras(db: Data<Database>, user: UserAuth) -> impl Responder {
 }
 
 #[get("/api/cameras/{id}")]
-async fn get_camera(db: Data<Database>, user: UserAuth, id: Path<CameraPath>) -> impl Responder {
+async fn get_camera(db: Data<Database>, _user: UserAuth, id: Path<CameraPath>) -> impl Responder {
     let p = id.into_inner();
     
     if let Ok(d) = db.get_camera(p.id).await {
@@ -96,11 +92,11 @@ async fn get_camera(db: Data<Database>, user: UserAuth, id: Path<CameraPath>) ->
 }
 
 #[get("/api/cameras/{id}/export")]
-async fn export(db: Data<Database>, user: UserAuth, dvr: Data<DVR>, id: Path<CameraPath>, filter: Query<ExportFilter>) -> Result<HttpResponse, ServiceError> {
+async fn export(_user: UserAuth, dvr: Data<DVR>, id: Path<CameraPath>, filter: Query<ExportFilter>) -> Result<HttpResponse, ServiceError> {
     let dvr = dvr.into_inner();
     let filter = filter.into_inner();
     let id = id.into_inner();
-    let data = crate::client::export(id.id, filter.from, filter.to, &*dvr).await.map_err(|_| ServiceError::InternalServerError)?;
+    let data = crate::client::export(id.id, filter.from, filter.to, &*dvr).await?;
     
     Ok(
         HttpResponse::Ok()
@@ -111,7 +107,7 @@ async fn export(db: Data<Database>, user: UserAuth, dvr: Data<DVR>, id: Path<Cam
 }
 
 #[post("/api/cameras/{id}")]
-async fn update_camera(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: Path<CameraPath>, camera: Json<SourceConfig>) -> impl Responder {
+async fn update_camera(db: Data<Database>, dvr: Data<DVR>, _user: UserAuth, id: Path<CameraPath>, camera: Json<SourceConfig>) -> impl Responder {
     let p = id.into_inner();
     let mut camera = camera.into_inner();
     camera._id = p.id;
@@ -126,7 +122,7 @@ async fn update_camera(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: P
 }
 
 #[get("/api/cameras/{id}/regions")]
-async fn get_regions(db: Data<Database>, user: UserAuth, id: Path<CameraPath>) -> impl Responder {
+async fn get_regions(db: Data<Database>, _user: UserAuth, id: Path<CameraPath>) -> impl Responder {
     let p = id.into_inner();
     
     if let Ok(d) = db.list_regions_camera(p.id).await {
@@ -137,7 +133,7 @@ async fn get_regions(db: Data<Database>, user: UserAuth, id: Path<CameraPath>) -
 }
 
 #[post("/api/cameras/{id}/regions")]
-async fn update_regions(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: Path<CameraPath>, regions: Json<Vec<Region>>) -> impl Responder {
+async fn update_regions(db: Data<Database>, dvr: Data<DVR>, _user: UserAuth, id: Path<CameraPath>, regions: Json<Vec<Region>>) -> impl Responder {
     let p = id.into_inner();
     let mut regions = regions.into_inner();
     
@@ -150,7 +146,7 @@ async fn update_regions(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: 
 }
 
 #[get("/api/cameras/{id}/image.jpg")]
-async fn get_camera_image(dvr: Data<DVR>, user: UserAuth, id: Path<CameraPath>) -> impl Responder {
+async fn get_camera_image(dvr: Data<DVR>, _user: UserAuth, id: Path<CameraPath>) -> impl Responder {
     let p = id.into_inner();
     
     if let Ok(d) = dvr.camera_image(p.id).await {
@@ -165,7 +161,7 @@ async fn get_camera_image(dvr: Data<DVR>, user: UserAuth, id: Path<CameraPath>) 
 }
 
 #[get("/api/detections")]
-async fn get_detections(db: Data<Database>, user: UserAuth, filter: Query<DetectionFilter>) -> impl Responder {
+async fn get_detections(db: Data<Database>, _user: UserAuth, filter: Query<DetectionFilter>) -> impl Responder {
     let f = filter.into_inner();
     if let Ok(d) = db.get_detections(f.source, f.at).await {
         Some(Json(d))
@@ -175,7 +171,7 @@ async fn get_detections(db: Data<Database>, user: UserAuth, filter: Query<Detect
 }
 
 #[get("/api/alerts")]
-async fn get_alerts(db: Data<Database>, user: UserAuth) -> impl Responder {
+async fn get_alerts(db: Data<Database>, _user: UserAuth) -> impl Responder {
     if let Ok(d) = db.list_alerts().await {
         Some(Json(d))
     } else {
@@ -184,7 +180,7 @@ async fn get_alerts(db: Data<Database>, user: UserAuth) -> impl Responder {
 }
 
 #[post("/api/alerts")]
-async fn add_alert(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, alert: Json<Alert>) -> impl Responder {
+async fn add_alert(db: Data<Database>, dvr: Data<DVR>, _user: UserAuth, alert: Json<Alert>) -> impl Responder {
     let alert = alert.into_inner();
     if let Ok(_) = db.add_alert(&alert).await {
         dvr.add_alert(alert.clone()).await;
@@ -195,7 +191,7 @@ async fn add_alert(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, alert: Js
 }
 
 #[post("/api/alerts/{id}")]
-async fn update_alert(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: Path<AlertPath>, alert: Json<Alert>) -> impl Responder {
+async fn update_alert(db: Data<Database>, dvr: Data<DVR>, _user: UserAuth, id: Path<AlertPath>, alert: Json<Alert>) -> impl Responder {
     let mut alert = alert.into_inner();
     let p = id.into_inner();
     alert._id = p.id;
@@ -210,7 +206,7 @@ async fn update_alert(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: Pa
 }
 
 #[delete("/api/alerts/{id}")]
-async fn delete_alert(db: Data<Database>, dvr: Data<DVR>, user: UserAuth, id: Path<AlertPath>) -> impl Responder {
+async fn delete_alert(db: Data<Database>, dvr: Data<DVR>, _user: UserAuth, id: Path<AlertPath>) -> impl Responder {
     let p = id.into_inner();
 
     if let Ok(_) = db.delete_alert(&p.id).await {
@@ -272,7 +268,7 @@ async fn logout(ident: Identity) -> Result<HttpResponse, actix_web::Error> {
 }
 
 #[get("/ws")]
-async fn ws_index(r: HttpRequest, stream: web::Payload, dvr: Data<DVR>, user: WSToken) -> Result<HttpResponse, actix_web::Error> {
+async fn ws_index(r: HttpRequest, stream: web::Payload, dvr: Data<DVR>, _user: WSToken) -> Result<HttpResponse, actix_web::Error> {
     ws::start(crate::client::ClientHandler{
         client: None,
         dvr: dvr.downgrade()
@@ -284,7 +280,7 @@ async fn add_user(db: Data<Database>, user: UserAuth, create_user: Json<CreateUs
     if !user.admin {
         return Err(ServiceError::Unauthorized)
     }
-    db.create_user(create_user.username.clone(), create_user.password.clone(), false).await;
+    let _ = db.create_user(create_user.username.clone(), create_user.password.clone(), false).await;
 
     Ok(HttpResponse::Ok().finish())
 }

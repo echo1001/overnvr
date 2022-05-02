@@ -95,14 +95,14 @@ impl InferContext {
             for _ in 0..params.numDetectedClasses {
                 classes.push(NvDsInferDetectionParams {
                     __bindgen_anon_1: NvDsInferDetectionParams__bindgen_ty_1 {
-                        preClusterThreshold: 0.2,
+                        preClusterThreshold: 0.4,
                     },
                     postClusterThreshold: 0.0,
                     eps: 0.0,
                     groupThreshold: 0,
                     minBoxes: 0,
                     minScore: 0.0,
-                    nmsIOUThreshold: 0.3,
+                    nmsIOUThreshold: 0.6,
                     topK: -1,
                 })
             }

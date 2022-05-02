@@ -1,12 +1,9 @@
 use tokio::sync::broadcast::{Sender, Receiver, channel};
 use tokio::sync::Mutex;
-use gst::prelude::*;
 use gst::Sample;
 use std::collections::HashMap;
 use std::sync::Arc;
 use once_cell::sync::OnceCell;
-
-static INSTANCE: OnceCell<Mutex<HashMap<String, SourceLink>>> = OnceCell::new();
 
 struct SourceLinkInner {
     buffer: Mutex<Vec<Sample>>,
@@ -54,12 +51,12 @@ impl SourceLink {
             }
         }
         buffer.push(sample.clone());
-        tx.send(sample);
+        let _ = tx.send(sample);
     }
  
     pub async fn add(&self) -> (Vec<Sample>, Receiver<Sample>) {
-        let mut buffer = self.0.buffer.lock().await;
-        let mut tx = self.0.tx.lock().await;
+        let buffer = self.0.buffer.lock().await;
+        let tx = self.0.tx.lock().await;
         let rx = tx.subscribe();
         (buffer.clone(), rx)
     }

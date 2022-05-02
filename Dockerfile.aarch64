@@ -21,8 +21,8 @@ RUN apt-get install -y \
 RUN apt-get install -y libopencv-dev
 #ENV LD_LIBRARY_PATH=/opt/nvidia/deepstream/deepstream/lib/:/usr/lib/aarch64-linux-gnu/
 
-COPY ./yolo /opt/yolo
-RUN cd /opt/yolo/nvdsinfer_custom_impl_Yolo/ && \
+
+run cd /opt && git clone https://github.com/marcoslucianops/DeepStream-Yolo yolo && cd /opt/yolo/nvdsinfer_custom_impl_Yolo/ && \
     OPENCV=1 CUDA_VER=10.2 make
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
