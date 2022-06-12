@@ -3690,6 +3690,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-test"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53474327ae5e166530d17f2d956afcb4f8a004de581b3cae10f12006bc8163e3"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "futures-core",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4181,11 +4194,10 @@ dependencies = [
 [[package]]
 name = "webrtc"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27d31ce825629e0a7b91c881d6b0a911cd65a7ebb6325fa94fbbddf1c7486f33"
 dependencies = [
  "async-trait",
  "bytes",
+ "env_logger",
  "hex",
  "interceptor",
  "lazy_static",
@@ -4204,6 +4216,7 @@ dependencies = [
  "stun",
  "thiserror",
  "tokio",
+ "tokio-test",
  "turn",
  "url",
  "waitgroup",
